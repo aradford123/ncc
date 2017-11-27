@@ -1,0 +1,12 @@
+<config>
+ <native xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-native">
+    <ip>
+      <dhcp>
+        <excluded-address xmlns="http://cisco.com/ns/yang/Cisco-IOS-XE-dhcp" nc:operation="remove">
+          <low-address>10.10.15.100</low-address>
+          <high-address>10.10.15.200</high-address>
+        </excluded-address>
+      </dhcp>
+    </ip>
+  </native>
+</config>

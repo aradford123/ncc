@@ -93,3 +93,11 @@ Remember you can only configure a switchport in L3 mode if you "no switchport" i
 ./ncc/ncc.py --host=adam-3850 --get-oper -x "/native/router/ospf/network[ip='10.101.1.0']"
 ./ncc/ncc.py --host=adam-3850 --do-edits native-router-ospf-delete-network --params '{"ROUTER_ID" : "100", "NETWORK":"10.101.1.0","MASK": "255.255.255.0"}'
 ```
+
+## DHCP
+```buildoutcfg
+./ncc/ncc.py --host=adam-3850 --do-edits native-ip-dhcp-excluded.tmpl
+./ncc/ncc.py --host=adam-3850 --get-oper -x "/native/ip/dhcp/excluded-address[low-address='10.10.15.1']"'
+./ncc/ncc.py --host=adam-3850 --do-edits native-ip-dhcp-delete-excluded.tmpl
+
+```
