@@ -269,7 +269,7 @@ if __name__ == '__main__':
         platform_metadata['software-flavor'] = 'ALL'
         inventory_output = d.send_command('show inventory all | begin Chassis')
         v = re.search(
-            r'Version +: +([0-9\.A-Z]+)\n',
+            r'Version +:? *([0-9\.A-Z]+)',
             version_output)
         if v is not None:
             ver = v.group(1)
@@ -280,6 +280,8 @@ if __name__ == '__main__':
              version_output, re.M)
         if pn is not None:
             platform_metadata['name'] = pn.group(1).replace('Series', '').strip().replace(' ', '-')
+        else:
+            platform_metadata['name'] = 'ios-xr'
 
         pid = re.search(
               r'PID: ([^,]+),', inventory_output)
@@ -292,7 +294,7 @@ if __name__ == '__main__':
                   inventory_output, re.M)
             if pid is not None:
                 platform_metadata['product-ids'].append(pid.group(1))
-    elif args.device_type=='cisco_ios':
+    elif args.device_type=='cisco_ios' or args.device_type=='cisco_xe':
         os = 'xe'
         platform_metadata['os-type'] = 'IOS-XE'
         # TODO: Do we want to track licenses for XE here?
@@ -308,10 +310,12 @@ if __name__ == '__main__':
         # This pattern seems complex, but it allows us to get the "C3850" part out
         # of "WS-C3850-48P" as an example.
         pn = re.search(
-             r'^cisco (WS-)?([a-zA-Z0-9\-/]+)(-[0-9][0-9A-Z]+)? \([^)]+) processor',
+             r'^cisco (WS-)?([a-zA-Z0-9\-/]+?)(-[0-9][0-9A-Z]+)? \([^\)]+\) processor',
              version_output, re.M)
         if pn is not None:
             platform_metadata['name'] = pn.group(2)
+        else:
+            platform_metadata['name'] = 'ios-xe'
 
         pid = re.search(
               r'PID: ([^,]+),', inventory_output)
@@ -333,6 +337,8 @@ if __name__ == '__main__':
              version_output, re.M)
         if pn is not None:
             platform_metadata['name'] = pn.group(1)
+        else:
+            platform_metadata['name'] = 'nx-os'
 
         pid = re.search(
               r'PID: ([^,]+),', inventory_output)
@@ -347,13 +353,12 @@ if __name__ == '__main__':
     repo = repoutil.RepoUtil(args.git_repo)
     repo.clone()
     targetdir = repo.localdir + '/' + args.git_path
-    caps_name = platform_metdata['name'].lower() + '-capabilities.xml'
+    caps_name = platform_metadata['name'].lower().replace('/', '_').replace(':', '_').replace('\\', '_') + '-capabilities.xml'
     caps_file = targetdir + '/' + caps_name
-    # TODO This should be revisited when ietf-yang-library support is added.
     platform_metadata['module-list-file']['type'] = 'capabilities'
 
     platform_metadata['module-list-file']['path'] = args.git_path + '/' + caps_name
-    platform_metadata['module-list-file']['owner'] = repo.get_owner()
+    platform_metadata['module-list-file']['owner'] = repo.get_repo_owner()
     platform_metadata['module-list-file']['repository'] = repo.get_repo_dir()
     if not exists(targetdir):
         makedirs(targetdir)
@@ -379,17 +384,48 @@ if __name__ == '__main__':
                            unknown_host_cb=unknown_host_cb)
 
     #
+    # Attempt to get the ietf-yang-library if available.
+    # If not, fall back to capabilities.
+    #
+    do_caps = False
+    try:
+        response = mgr.get(('xpath', '/modules-state')).xml
+        lib_data = etree.fromstring(response)
+        lib_tags = lib_data.findall('.//{urn:ietf:params:xml:ns:yang:ietf-yang-library}modules-state')
+        if len(lib_tags) == 0:
+            raise Exception('No support for ietf-yang-library')
+
+        with open(caps_file, 'w') as capsfile:
+            for lib_tag in lib_tags:
+                capsfile.write(etree.tostring(lib_tag, pretty_print=True))
+            capsfile.close()
+        platform_metadata['module-list-file']['type'] = 'yang-library'
+    except (RPCError, Exception) as rpce:
+        do_caps = True
+
+    if do_caps:
+        #
+        # Save out capabilities
+        #
+        with open(caps_file, 'w') as capsfile:
+            capsfile.write('''<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">\n <capabilities>\n''')
+            for c in mgr.server_capabilities:
+                capsfile.write('  <capability>{}</capability>\n'.format(c))
+            capsfile.write(''' </capabilities>\n</hello>\n''')
+            capsfile.close()
+    #
     # Save out metadata (append if it exists)
     #
     md_file = targetdir + '/' + 'platform-metadata.json'
-    md = { 'platforms': [] }
+    md = {}
+    md['platforms'] = { 'platform': [] }
     if isfile(md_file) and getsize(md_file) > 0:
         mdfile = open(md_file, 'r')
         md = json.load(mdfile)
         mdfile.close()
 
         found_platform = False
-        for platform in md['platforms']:
+        for platform in md['platforms']['platform']:
             if platform['vendor']=='cisco' and platform['name']==platform_metadata['name']:
                 found_platform = True
                 if platform_metadata['product-ids'][0] not in platform['product-ids']:
@@ -397,23 +433,13 @@ if __name__ == '__main__':
                 break
 
         if not found_platform:
-            md['platforms'].append(platform_metadata)
+            md['platforms']['platform'].append(platform_metadata)
     else:
-        md['platforms'].append(platform_metadata)
+        md['platforms']['platform'].append(platform_metadata)
 
     mdfile = open(md_file, 'w')
     json.dump(md, mdfile, indent=4)
     mdfile.close()
-
-    #
-    # Save out capabilities
-    #
-    with open(caps_file, 'w') as capsfile:
-        capsfile.write('''<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">\n <capabilities>\n''')
-        for c in mgr.server_capabilities:
-            capsfile.write('  <capability>{}</capability>\n'.format(c))
-        capsfile.write(''' </capabilities>\n</hello>\n''')
-        capsfile.close()
 
     #
     # Open up a report file

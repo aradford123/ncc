@@ -4,6 +4,8 @@ import sys
 import os
 from argparse import ArgumentParser
 from ncclient import manager
+from ncclient.operations.rpc import RPCError
+from ncclient.xml_ import *
 from jinja2 import Environment
 from jinja2.exceptions import UndefinedError
 from jinja2 import meta
@@ -44,6 +46,13 @@ CANDIDATE = False
 #
 NCC_DIR, _ = os.path.split(os.path.realpath(__file__))
 
+
+def strip_leading_trailing_ws(to_strip):
+    s1 = re.sub(r"^\s*" , "" , to_strip)
+    s2 = re.sub(r"\s*$" , "" , s1)
+    return s2
+
+
 def display_capabilities(m):
     """Display the capabilities in a useful, categorized way.
     """
@@ -61,11 +70,12 @@ def display_capabilities(m):
         m = re.search(re_model, c)
         if m:
             module_list.append('%s (%s)' % (m.group(2), m.group(1)))
-        else:
-            print('UNMATCHED model: %s' % c)
+        #else:
+        #    print('UNMATCHED model: %s' % c)
 
     # pre-process capabilities, split into various categories
     ns_to_list = [
+        ('urn:ietf:params:xml:ns:yang:smiv2', mib_models),
         ('urn:ietf:params:xml:ns', ietf_models),
         ('http://openconfig.net/yang', openconfig_models),
         ('http://cisco.com/ns/yang', cisco_models,),
@@ -92,7 +102,7 @@ def display_capabilities(m):
                     matched = True
                     break
         if matched==False:
-            print(c)
+            other_models.append(c)
 
     # now print them
     list_to_heading = [
@@ -100,14 +110,14 @@ def display_capabilities(m):
         (ietf_models, 'IETF Models:'),
         (openconfig_models, 'OpenConfig Models:'),
         (cisco_models, 'Cisco Models:'),
-        (cisco_calvados_models, 'Cisco Calvados Models:'),
+        (cisco_calvados_models, 'Cisco XR Admin Plane Models:'),
         (mib_models, 'MIB Models:'),
         (other_models, 'Other Models:'),
     ]
     for (l, h) in list_to_heading:
         if len(l) > 0:
             print(h)
-            for s in l:
+            for s in sorted(l):
                 print('\t%s' % s)
 
 
@@ -182,11 +192,20 @@ def get_running_config(m, filter=None, xpath=None):
     """
     import time
     if filter and len(filter) > 0:
+        
         c = m.get_config(source='running', filter=('subtree', filter))
+        
     elif xpath and len(xpath)>0:
+        
         c = m.get_config(source='running', filter=('xpath', xpath))
+        
+        # test for xpath filter with namespaces
+        # c = m.get_config(source='running', filter='<nc:filter type="xpath" xmlns:nc="urn:ietf:params:xml:ns:netconf:base:1.0" xmlns:if="urn:ietf:params:xml:ns:yang:ietf-interfaces" select="%s"/>' % xpath)
+        
     else:
+        
         c = m.get_config(source='running')
+
     print(etree.tostring(c.data, pretty_print=True).decode('UTF-8'))
 
 def get(m, filter=None, xpath=None):
@@ -250,8 +269,8 @@ if __name__ == '__main__':
     g = parser.add_mutually_exclusive_group()
     g.add_argument('-f', '--filter', type=str,
                    help="NETCONF subtree filter")
-    g.add_argument('--named-filter', type=str,
-                   help="Named NETCONF subtree filter")
+    g.add_argument('--named-filter', nargs='+',
+                   help="List of named NETCONF subtree filters")
     g.add_argument('-x', '--xpath', type=str,
                    help="NETCONF XPath filter")
 
@@ -326,10 +345,12 @@ if __name__ == '__main__':
     #
     # This populates the filter if it's a canned filter.
     #
-    if args.named_filter:
+    if args.named_filter is not None:
         try:
-            args.filter = named_filters.get_template(
-                '%s.tmpl' % args.named_filter).render(**kwargs)
+            args.filter = []
+            for f in args.named_filter:
+                args.filter.append(named_filters.get_template(
+                    '%s.tmpl' % f).render(**kwargs))
         except UndefinedError as e:
             print ("Undefined variable %s.  Use --params to specify json dict" % e.message)
             exit(1)
@@ -372,12 +393,27 @@ if __name__ == '__main__':
         get_running_config(m, xpath=args.xpath, filter=args.filter)
 
     elif args.get_oper:
-        get(m, filter=args.filter, xpath=args.xpath)
+        if isinstance(args.filter, list):
+            for f in args.filter:
+                get(m, filter=f, xpath=None)
+        else:
+            get(m, filter=args.filter, xpath=args.xpath)
     elif args.do_edits:
-        do_templates( m,
-                      [named_templates.get_template('%s.tmpl' % t) for t in args.do_edits],
-                      default_op=args.default_op,
-                      **kwargs)
+        try:
+            do_templates(
+                m,
+                [named_templates.get_template('%s.tmpl' % t) for t in args.do_edits],
+                default_op=args.default_op,
+                **kwargs)
+        except RPCError as e:
+            print("RPC Error")
+            print("---------")
+            print("severity: %s" % e.severity)
+            print("     tag: %s" % e.tag)
+            if e.path and len(e.path)>0:
+                print("    path: %s" % strip_leading_trailing_ws(e.path))
+            print(" message: %s" % e.message)
+            print("    type: %s" % e.type)
     elif args.capabilities:
         display_capabilities(m)
     elif args.is_supported:
